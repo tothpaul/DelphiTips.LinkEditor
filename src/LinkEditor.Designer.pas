@@ -12,7 +12,8 @@ interface
 }
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes,
-  Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls, Vcl.ExtCtrls, vcl.GraphUtil;
+  Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls,
+  Vcl.ExtCtrls, vcl.GraphUtil, Vcl.ComCtrls;
 
 type
   TDesignTable = class(TCustomPanel)
@@ -28,18 +29,31 @@ type
     procedure LabelMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Integer);
     procedure ListEnter(Sender: TObject);
     procedure ListExit(Sender: TObject);
-    procedure ListDragOver(Sender, Source: TObject; X, Y: Integer; State: TDragState; var Accept: Boolean);
+    procedure ListDragOver(Sender, Source: TObject; X, Y: Integer; State: TDragState; var Accept: Boolean); virtual;
     procedure ListDragDrop(Sender, Source: TObject; X, Y: Integer);
     procedure ListKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
-    function ItemRect(Index: Integer): TRect;
+    function ItemRect(Index: Integer): TRect; virtual;
   protected
     procedure CreateParams(var Params:TCreateParams); override;
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
   public
     constructor Create(AOwner: TComponent); override;
     procedure AddField(const Name: string);
-    function FieldCount: Integer;
+    function FieldCount: Integer; virtual;
     property Caption;
+  end;
+
+  TDesignObject = class(TDesignTable)
+  private
+    FListView: TListView;
+    procedure SelfDragOver(Sender, Source: TObject; X, Y: Integer; State: TDragState; var Accept: Boolean);
+    procedure SelfDragDrop(Sender, Source: TObject; X, Y: Integer);
+    function ItemRect(Index: Integer): TRect; override;
+  public
+    constructor Create(AOwner: TComponent); override;
+    procedure AddField(const Name: string; const aImageIndex: Integer); overload;
+    function FieldCount: Integer; override;
+    procedure SetSmallImages(aImageList: TImageList);
   end;
 
   TDesignLink = class;
@@ -54,11 +68,14 @@ type
     FLinks: TList;
     FActiveTable: TDesignTable;
     FOnSelectTable: TNotifyEvent;
-    FCanvas:TControlCanvas;
+    FCanvas: TControlCanvas;
     FCurLink: TDesignLink;
+    function AddTable(const Caption: string): TDesignTable;
+    function AddObject(const Caption: string): TDesignObject;
     procedure TableEnter(Sender: TObject);
     procedure WMPaint(var Message: TWMPaint); message WM_PAINT;
     procedure AddLink(Source, Target: TDesignTable; SourceIndex, TargetIndex: Integer);
+    procedure AddObjectLink(Source, Target: TDesignObject; SourceIndex: Integer);
     procedure SetActiveTable(Table: TDesignTable);
     procedure DeleteLink(Table: TDesignTable; Index: Integer);
     procedure DeleteTable(Table: TDesignTable);
@@ -67,9 +84,11 @@ type
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
   public
     { Déclarations publiques }
+    type
+      TEntity = (eTable, eObject);
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
-    function AddTable(const Caption: string): TDesignTable;
+    function AddEntity(aEntity: TEntity; const Caption: string): TDesignTable;
     function TableCount: Integer;
     property ActiveTable: TDesignTable read FActiveTable;
     property OnSelectTable: TNotifyEvent read FOnSelectTable write FOnSelectTable;
@@ -83,8 +102,13 @@ type
     SourceIndex: Integer;
     TargetIndex: Integer;
     LinkType: Integer;
-    procedure Draw(Canvas:TCanvas);
-    function Click(x,y: Integer): Boolean;
+    procedure Draw(Canvas:TCanvas); virtual;
+    function Click(x,y: Integer): Boolean; virtual;
+  end;
+
+  TDesignObjectLink = class(TDesignLink)
+    procedure Draw(Canvas:TCanvas); override;
+    function Click(x,y: Integer): Boolean; override;
   end;
 
 implementation
@@ -92,6 +116,15 @@ implementation
 {$R *.dfm}
 
 { TDesigner }
+
+function TDesigner.AddEntity(aEntity: TEntity;
+  const Caption: string): TDesignTable;
+begin
+  case aEntity of
+    eTable: result := AddTable(Caption);
+    else result := AddObject(Caption);
+  end;
+end;
 
 procedure TDesigner.AddLink(Source, Target: TDesignTable; SourceIndex,
   TargetIndex: Integer);
@@ -127,6 +160,33 @@ begin
   Link.TargetTable := Target;
   Link.SourceIndex := SourceIndex;
   Link.TargetIndex := TargetIndex;
+  Link.LinkType := 2;
+  FLinks.Add(Link);
+  Invalidate;
+end;
+
+function TDesigner.AddObject(const Caption: string): TDesignObject;
+begin
+  Result := TDesignObject.Create(Self);
+  FTables.Add(Result);
+  Result.Caption := Caption;
+  Result.Left := 30 * FTables.Count;
+  Result.Top := 20 * FTables.Count;
+  Result.Height := 100;
+  Result.Parent := Self;
+  Result.FTableEnter := TableEnter;
+  TableEnter(Result);
+end;
+
+procedure TDesigner.AddObjectLink(Source, Target: TDesignObject; SourceIndex: Integer);
+var
+  Link: TDesignLink;
+begin
+  Link := TDesignObjectLink.Create;
+  Link.SourceTable := Source;
+  Link.TargetTable := Target;
+  Link.SourceIndex := SourceIndex;
+  Link.TargetIndex := -1;
   Link.LinkType := 2;
   FLinks.Add(Link);
   Invalidate;
@@ -429,7 +489,7 @@ end;
 procedure TDesignTable.ListDragDrop(Sender, Source: TObject; X, Y: Integer);
 begin
   TDesigner(Parent).AddLink(TListBox(Source).Parent as TDesignTable, Self, TListBox(Source).ItemIndex, FList.ItemIndex);
-  TListBox(Source).ItemIndex:=-1;
+  TListBox(Source).ItemIndex := -1;
   FList.ItemIndex := -1;
 end;
 
@@ -465,12 +525,29 @@ end;
 
 procedure TDesignTable.ListKeyDown(Sender: TObject; var Key: Word;
   Shift: TShiftState);
+var
+  Index: Integer;
 begin
-  var Index := FList.ItemIndex;
-  if Index < 0 then
-    Exit;
-  TDesigner(Parent).DeleteLink(Self, Index);
-  FList.Items.Delete(Index);
+  if Key = VK_DELETE then
+  begin
+    if Sender is TListBox then
+    begin
+      Index := (Sender as TListBox).ItemIndex;
+      if Index < 0 then
+        Exit;
+      TDesigner(Parent).DeleteLink(Self, Index);
+      FList.Items.Delete(Index);
+    end;
+    if Sender is TListView then
+    begin
+      Index := (Sender as TListView).ItemIndex;
+      if Index > -1 then
+      begin
+        TDesigner(Parent).DeleteLink(Self, Index);
+        (Sender as TListView).Items.Delete(Index);
+      end;
+    end;
+  end;
 end;
 
 procedure TDesignTable.WMWindowPosChanged(var Msg: TMessage);
@@ -485,7 +562,7 @@ function TDesignLink.Click(x, y: Integer): Boolean;
 const
   k = 4;
 
-  function Between(a,b,c: Integer): Boolean;
+  function Between(a, b, c: Integer): Boolean;
   begin
     if b > c then
       Result := Between(a, c, b)
@@ -594,6 +671,155 @@ begin
       Polygon(Arrow1);
     if LinkType and 2 <> 0 then
       Polygon(Arrow2);
+  end;
+end;
+
+
+{ TDesignObject }
+
+procedure TDesignObject.AddField(const Name: string; const aImageIndex: Integer);
+begin
+  with FListView.Items.AddItem(TListItem.Create(FListView.Items), -1) do
+  begin
+    Caption := Name;
+    ImageIndex := aImageIndex;
+  end;
+end;
+
+constructor TDesignObject.Create(AOwner: TComponent);
+begin
+  inherited;
+  // only accept dragging to Self and Label
+  OnDragOver := SelfDragOver;
+  OnDragDrop := SelfDragDrop;
+  FLabel.OnDragOver := SelfDragOver;
+  FLabel.OnDragDrop := SelfDragDrop;
+  FList.Visible := false;
+  FListView := TListView.Create(Self);
+  with FListView do
+  begin
+    with Columns.Add() do
+      AutoSize := true;
+    DragMode := TDragMode.dmAutomatic;
+    GridLines := True; // al this for this
+    ReadOnly := True;
+    ShowColumnHeaders := False;
+    ViewStyle := vsReport;
+    Align := alClient;
+    HideSelection := false; // actually hides the selection -> selection is greyed
+    Parent := Self;
+    OnKeyDown := ListKeyDown;
+  end;
+end;
+
+function TDesignObject.FieldCount: Integer;
+begin
+  result := FListView.items.Count;
+end;
+
+function TDesignObject.ItemRect(Index: Integer): TRect;
+var
+  p: TPoint;
+begin
+  if Index = -1 then
+    Result := TRect.Create(TPoint.Create(Left, Top), Width, Height)
+  else
+  begin
+    Result := FListView.Items[Index].DisplayRect(drBounds);
+    Inc(Result.Left, Left);
+    p.Y := FListView.Top;
+    p := TDesigner(Parent).ScreenToClient(ClientToScreen(p));
+    Result.Offset(0, p.y);
+    Result.Width := Width;
+  end;
+end;
+
+procedure TDesignObject.SelfDragDrop(Sender, Source: TObject; X, Y: Integer);
+begin
+  TDesigner(Parent).AddObjectLink(TListView(Source).Parent as TDesignObject, Self, TListView(Source).ItemIndex);
+end;
+
+procedure TDesignObject.SelfDragOver(Sender, Source: TObject; X, Y: Integer;
+  State: TDragState; var Accept: Boolean);
+var
+  lSourceParent: TWinControl;
+  lSenderParent: TWinControl;
+begin
+  Accept := false;
+  if (Source is TListView) then
+  begin
+    lSourceParent := TListView(Source).Parent; // Source's TDesignObject
+    if Sender is TDesignObject then
+      Accept := (lSourceParent <> Sender) // other TDesignObject
+    else // if Sender is TDesignObject's child
+    begin
+      lSenderParent := TWinControl(Sender).Parent;
+      Accept := (lSourceParent <> lSenderParent) // other TDesignObject
+    end;
+  end;
+end;
+
+procedure TDesignObject.SetSmallImages(aImageList: TImageList);
+begin
+  FListView.SmallImages := aImageList;
+end;
+
+
+{ TDesignObjectLink }
+
+function TDesignObjectLink.Click(x, y: Integer): Boolean;
+const
+  k = 4;
+  function Between(a, b, c: Integer): Boolean;
+  begin
+    if b > c then
+      Result := Between(a, c, b)
+    else
+      Result := (a > b - k) and (a < c + k);
+  end;
+begin
+  Result := True;
+  if (Abs(y - A.y) < k) and Between(x, A.x, B.x) then
+    Exit;
+  if (Abs(x - B.x) < k) and Between(y, A.y, B.y) then
+    Exit;
+  Result := False;
+end;
+
+procedure TDesignObjectLink.Draw(Canvas: TCanvas);
+const
+  k = 4;
+var
+ s,t: TRect;
+ D: TPoint;
+ delta: Integer;
+ Arrow1: array[0..2] of TPoint;
+begin
+  s := SourceTable.ItemRect(SourceIndex);
+  t := TargetTable.ItemRect(TargetIndex);
+  A.x := s.Right;
+  A.y := (s.Top+s.Bottom) div 2;
+  B.x := t.Left + t.Width div 2;
+  B.y := t.Top;
+  D := B;
+  Arrow1[0] := D;
+  Dec(D.x, k);
+  Dec(D.y, 2 * k);
+  Arrow1[1] := D;
+  Inc(D.x, 2 * k);
+  Arrow1[2] := D;
+  with Canvas do
+  begin
+    if Active then
+      Pen.Color := clBlue
+    else
+      Pen.Color := clBlack;
+    MoveTo(A.x, A.y);
+    LineTo(B.x, A.y);
+    LineTo(B.x, B.y);
+    Brush.Color := clBlack;
+    if LinkType = 2 then
+      Polygon(Arrow1);
   end;
 end;
 

@@ -1,27 +1,24 @@
 unit LinkEditor.Main;
-
 interface
 {
   DelphiTips.LinkEditor (c)2022 by Paul TOTH
-
   this code is free to use
-
   proper credits are welcome
-
   https://github.com/tothpaul
 }
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls, Vcl.ExtCtrls,
-  LinkEditor.Designer;
-
+  LinkEditor.Designer, System.ImageList, Vcl.ImgList;
 type
   TMain = class(TForm)
     Panel1: TPanel;
-    btNewTable: TButton;
+    btNewEntity: TButton;
     btNewField: TButton;
     Designer: TDesigner;
-    procedure btNewTableClick(Sender: TObject);
+    rgEntities: TRadioGroup;
+    ImageList1: TImageList;
+    procedure btNewEntityClick(Sender: TObject);
     procedure FormCreate(Sender: TObject);
     procedure btNewFieldClick(Sender: TObject);
   private
@@ -42,12 +39,22 @@ procedure TMain.btNewFieldClick(Sender: TObject);
 begin
   if Designer.ActiveTable = nil then
     Exit;
-  Designer.ActiveTable.AddField('Field' + Designer.ActiveTable.FieldCount.ToString);
+  if Designer.ActiveTable is TDesignObject then
+  begin
+    (Designer.ActiveTable as TDesignObject).AddField(Format('%s%u', ['CreateObject', Designer.TableCount]), 0);
+  end else
+    Designer.ActiveTable.AddField(Format('%s%u', ['Field', Designer.ActiveTable.FieldCount]));
 end;
 
-procedure TMain.btNewTableClick(Sender: TObject);
+procedure TMain.btNewEntityClick(Sender: TObject);
 begin
-  Designer.AddTable('Table' + Designer.TableCount.ToString);
+  case rgEntities.ItemIndex of
+    0: Designer.AddEntity(eTable, 'Table' + Designer.TableCount.ToString);
+    1: begin
+         with Designer.AddEntity(eObject, 'Object' + Designer.TableCount.ToString) as TDesignObject do
+           SetSmallImages(ImageList1);
+       end;
+  end;
 end;
 
 procedure TMain.FormCreate(Sender: TObject);
